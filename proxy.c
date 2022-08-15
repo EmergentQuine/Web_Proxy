@@ -1,21 +1,15 @@
+#include "proxy.h"
+#include "cache.h"
 #include "csapp.h"
+#include "rwqueue.h"
 #include "sbuf.h"
 
-/* Recommended max cache and object sizes */
-#define MAX_CACHE_SIZE 1049000
-#define MAX_OBJECT_SIZE 102400
-#define NTHREADS 4
-#define SBUFSIZE 16
-
-#ifdef DEBUG
-#define dbg_printf(...) printf(__VA_ARGS__)
-#else
-#define dbg_printf(...)
-#endif
-
-void doit(int fd);
+void cache_serve(int connfd, cache_item_t *cached);
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg);
+void direct_serve(int connfd, char *hostname, char *hostport, char *path, char *method);
+void doit(int fd);
 int parse_uri(int fd, char *uri, char *hostname, char *hostport, char *path);
+void sigint_handler(int sig);
 void *thread(void *vargp);
 
 /* You won't lose style points for including this long line in your code */
@@ -24,6 +18,9 @@ static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64;
 /* Shared buffer of connected descriptors */
 sbuf_t sbuf;
 
+/* Web content cache, shared by all connections */
+cache_t cache;
+
 int main( int argc, char **argv){
     if (argc != 2){
         fprintf(stderr, "usaage: %s <port>\n", argv[0]);
@@ -31,11 +28,16 @@ int main( int argc, char **argv){
     }
 
     int listenfd = Open_listenfd(argv[1]);
+
+    Signal(SIGINT, sigint_handler);
+
     sbuf_init(&sbuf, SBUFSIZE);
     pthread_t tid;
     for (size_t i = 0; i < NTHREADS; i++){
         pthread_create($tid, NULL, thread, NULL);
     }
+
+    cache_init(&cache);
 
     int connfd;
     socklen_t clientlen;
@@ -46,6 +48,7 @@ int main( int argc, char **argv){
         connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
         Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE, port, MAXLINE, 0);
         dbg_printf("Accepted connection from (%s, %s)\n", hostname, port);
+
         sbuf_insert(&sbuf, connfd);
     }
     return 0;
@@ -62,7 +65,7 @@ void *thread(void *vargp){
 
 void doit(int connfd){
     rio_t conn_rio;
-    char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
+    char buf[MAXLINE], method[16], uri[MAXLINE], version[16];
 
     Rio_readinitb(&conn_rio, connfd);
     if (!Rio_readinitb(&coon_rio, buf, MAXLINE))
@@ -80,6 +83,22 @@ void doit(int connfd){
         return;
     dbg_printf("hostname: %s, hostport: %s, path: %s\n", hostname, hostport, path);
 
+
+    cache_item_t *cached = cache_find(&cache, hostname, hostport, path);
+
+    if(!cached){
+        dbg_printf("direct serve!\n");
+        direct_serve(connfd, hostname, hostport, path, method);
+    } 
+    else {
+        dbg_printf("serve from cache!\n");
+        cache_serve(connfd, cached);
+    }
+}
+
+void direct_serve(int connfd, char *hostname, char *hostport, char *path, char *method){
+
+    char buf[MAXLINE];
     int clientfd = Open_listenfd(hostname, hostport);
     rio_t client_rio;
     Rio_readinitb(&client_rio, clientfd);
@@ -100,10 +119,34 @@ void doit(int connfd){
     Rio_writen(clientfd, buf, strlen(buf));
 
 #pragma GCC diagnostic pop
+
+    char *obj_cache_base_p = Malloc(MAX_OBJECT_SIZE);
+    char *obj_cache_p = obj_cache_base_p;
     ssize_t readNum;
     while ((readNum = Rio_readnb(&client_rio, buf, MAXLINE))) {
+        if ((size_t)(obj_cache_p - obj_cache_base_p) < MAX_OBJECT_SIZE) {
+            memcpy(obj_cache_p, buf, readNum);
+            obj_cache_p += readNum;
+        }
         Rio_writen(connfd, buf, readNum);
     }
+
+    size_t obj_size = (size_t)(obj_cache_p - obj_cache_base_p);
+    // object can be cached
+    if (obj_size <= MAX_OBJECT_SIZE) {
+        cache_item_t *obj = build_cache_item(hostname, hostport, path, obj_cache_base_p, obj_size);
+
+        cache_insert(&cache, obj);
+    }
+    Free(obj_cache_base_p);
+}
+
+
+/*
+ * serve client request by reading from cache
+ */
+void cache_serve(int connfd, cache_item_t *cached) {
+    Rio_writen(connfd, cached->cache, cached->cache_size);
 }
 
 int parse_uri(int fd, char *uri, char *hostname, char *hostport, char *path){
@@ -166,4 +209,18 @@ void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longms
     Rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "<hr><em>Proxy server</em>\r\n");
     Rio_writen(fd, buf, strlen(buf));
+}
+
+void sigint_handler(int sig) {
+    int olderrno = errno;
+
+    Sio_puts("Gracefully shutdown...\nFreeing allocated memory...\n");
+    sbuf_deinit(&sbuf);
+    cache_deinit(&cache);
+    Sio_puts("Freed\nShutting down....\n");
+
+    Signal(SIGINT, SIG_DFL);
+    Kill(getpid(), SIGINT);
+
+    errno = olderrno;
 }
