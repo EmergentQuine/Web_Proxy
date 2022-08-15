@@ -175,11 +175,12 @@ do
 done
 
 # Make sure we have an existing executable proxy
-if [ ! -x ./proxy ]
-then 
-    echo "Error: ./proxy not found or not an executable file. Please rebuild your proxy and try again."
-    exit
-fi
+# if [ ! -x ./proxy ]
+# then 
+#     echo "Error: ./proxy not found or not an executable file. Please rebuild your proxy and try again."
+#     exit
+# fi
+make -B 2> /dev/null
 
 # Make sure we have an existing executable nop-server.py file
 if [ ! -x ./nop-server.py ]
@@ -254,6 +255,7 @@ do
         echo "   Success: Files are identical."
     else
         echo "   Failure: Files differ."
+        exit
     fi
 done
 
