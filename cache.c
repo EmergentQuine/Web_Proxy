@@ -49,7 +49,7 @@ cache_item_t *build_cache_item(char *hostname, char *hostport, char *path, char 
     return item_p;
 }
 
-void remove_cache_item(cache_t *cp, cache_item_t *item_p) {
+static void remove_cache_item(cache_t *cp, cache_item_t *item_p) {
     dbg_printf("evict item: %s:%s%s\n", item_p->hostname, item_p->hostport, item_p->path);
     item_p->prev->next = item_p->next;
     item_p->next->prev = item_p->prev;
@@ -59,7 +59,7 @@ void remove_cache_item(cache_t *cp, cache_item_t *item_p) {
     Free(item_p);
 }
 
-void evict(cache_t *cp, size_t required_size) {
+static void evict(cache_t *cp, size_t required_size) {
     cache_item_t *victim_item_p, *curr;
     int min_lru;
     while (cp->total_size + required_size > MAX_CACHE_SIZE) {

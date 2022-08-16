@@ -24,6 +24,10 @@ sbuf_t sbuf;
 /* Web content cache, shared by all connections */
 cache_t cache;
 
+/* protect shared cache */
+rw_queue_t rw_queue;
+
+
 int main( int argc, char **argv){
     if (argc != 2){
         fprintf(stderr, "usaage: %s <port>\n", argv[0]);
@@ -41,6 +45,7 @@ int main( int argc, char **argv){
     }
 
     cache_init(&cache);
+    rw_queue_init(&rw_queue);
 
     int connfd;
     socklen_t clientlen;
@@ -85,7 +90,10 @@ void doit(int connfd){
     if (parse_uri(connfd, uri, hostname, hostport, path) < 0)
         return;
 
+    rw_token_t token;
+    rw_queue_request_read(&rw_queue, &token);
     cache_item_t *cached = cache_find(&cache, hostname, hostport, path);
+    rw_queue_release(&rw_queue);
 
     if(!cached){
         ddbg_printf("hostname: %s, hostport: %s, path: %s\n", hostname, hostport, path);
@@ -127,22 +135,31 @@ void direct_serve(int connfd, char *hostname, char *hostport, char *path, char *
 
     char *obj_cache_base_p = Malloc(MAX_OBJECT_SIZE);
     char *obj_cache_p = obj_cache_base_p;
-    ssize_t readNum;
+    ssize_t readNum, totalNum = 0;
     while ((readNum = Rio_readnb(&client_rio, buf, MAXLINE))) {
-        if ((size_t)(obj_cache_p - obj_cache_base_p) <= MAX_OBJECT_SIZE) {
+        if ((totalNum + readNum ) <= MAX_OBJECT_SIZE) {
             memcpy(obj_cache_p, buf, readNum);
             obj_cache_p += readNum;
         }
+        totalNum += readNum;
+
         Rio_writen(connfd, buf, readNum);
     }
 
-    size_t obj_size = (size_t)(obj_cache_p - obj_cache_base_p);
     // object can be cached
-    if (obj_size <= MAX_OBJECT_SIZE) {
+    if (totalNum <= MAX_OBJECT_SIZE) {
+        dbg_printf("%s:%s%s can be cached, object size: %zd\n", hostname, hostport, path, totalNum);
         cache_item_t *obj = build_cache_item(hostname, hostport, path, obj_cache_base_p, obj_size);
 
+        rw_token_t token;
+        rw_queue_request_write(&rw_queue, &token);
         cache_insert(&cache, obj);
+        rw_queue_release(&rw_queue);
     }
+    else{
+        dbg_printf("%s:%s%s cannot be cached, object size: %zd\n", hostname, hostport, path, totalNum);
+    }
+
     Free(obj_cache_base_p);
 }
 
@@ -195,7 +212,6 @@ int parse_uri(int fd, char *uri, char *hostname, char *hostport, char *path{
     return 0;
 }
 
-    
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg){
     char buf[MAXLINE];
 

@@ -180,7 +180,7 @@ done
 #     echo "Error: ./proxy not found or not an executable file. Please rebuild your proxy and try again."
 #     exit
 # fi
-make -B 2> /dev/null
+make -B || exit 1
 
 # Make sure we have an existing executable nop-server.py file
 if [ ! -x ./nop-server.py ]
@@ -361,7 +361,7 @@ wait_for_port_use "${tiny_port}"
 # Run the proxy
 proxy_port=$(free_port)
 echo "Starting proxy on port ${proxy_port}"
-./proxy ${proxy_port} &> /dev/null &
+./proxy ${proxy_port} &
 proxy_pid=$!
 
 # Wait for the proxy to start in earnest
@@ -371,6 +371,7 @@ wait_for_port_use "${proxy_port}"
 clear_dirs
 for file in ${CACHE_LIST}
 do
+    echo
     echo "Fetching ./tiny/${file} into ${PROXY_DIR} using the proxy"
     download_proxy $PROXY_DIR ${file} "http://localhost:${tiny_port}/${file}" "http://localhost:${proxy_port}"
 done
