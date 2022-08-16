@@ -4,13 +4,16 @@
 #include "rwqueue.h"
 #include "sbuf.h"
 
-void cache_serve(int connfd, cache_item_t *cached);
-void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg);
-void direct_serve(int connfd, char *hostname, char *hostport, char *path, char *method);
-void doit(int fd);
-int parse_uri(int fd, char *uri, char *hostname, char *hostport, char *path);
-void sigint_handler(int sig);
 void *thread(void *vargp);
+void doit(int fd);
+void direct_serve(int connfd, char *hostname, char *hostport, char *path, char *method);
+void cache_serve(int connfd, cache_item_t *cached);
+int parse_uri(int fd, char *uri, char *hostname, char *hostport, char *path);
+
+void sigint_handler(int sig);
+void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg);
+void client500error(int fd);
+
 
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
@@ -81,17 +84,15 @@ void doit(int connfd){
     char hostname[MAXLINE], path[MAXLINE], hostport[6];
     if (parse_uri(connfd, uri, hostname, hostport, path) < 0)
         return;
-    dbg_printf("hostname: %s, hostport: %s, path: %s\n", hostname, hostport, path);
-
 
     cache_item_t *cached = cache_find(&cache, hostname, hostport, path);
 
     if(!cached){
-        dbg_printf("direct serve!\n");
+        ddbg_printf("hostname: %s, hostport: %s, path: %s\n", hostname, hostport, path);
         direct_serve(connfd, hostname, hostport, path, method);
     } 
     else {
-        dbg_printf("serve from cache!\n");
+        dbg_printf("hostname: %s, hostport: %s, path: %s\n", hostname, hostport, path);
         cache_serve(connfd, cached);
     }
 }
@@ -99,7 +100,11 @@ void doit(int connfd){
 void direct_serve(int connfd, char *hostname, char *hostport, char *path, char *method){
 
     char buf[MAXLINE];
-    int clientfd = Open_listenfd(hostname, hostport);
+    int clientfd;
+    if ((clientfd = Open_listenfd(hostname, hostport)) < 0) {
+        client500error(connfd);
+        return;
+    };
     rio_t client_rio;
     Rio_readinitb(&client_rio, clientfd);
 
@@ -124,7 +129,7 @@ void direct_serve(int connfd, char *hostname, char *hostport, char *path, char *
     char *obj_cache_p = obj_cache_base_p;
     ssize_t readNum;
     while ((readNum = Rio_readnb(&client_rio, buf, MAXLINE))) {
-        if ((size_t)(obj_cache_p - obj_cache_base_p) < MAX_OBJECT_SIZE) {
+        if ((size_t)(obj_cache_p - obj_cache_base_p) <= MAX_OBJECT_SIZE) {
             memcpy(obj_cache_p, buf, readNum);
             obj_cache_p += readNum;
         }
@@ -149,7 +154,7 @@ void cache_serve(int connfd, cache_item_t *cached) {
     Rio_writen(connfd, cached->cache, cached->cache_size);
 }
 
-int parse_uri(int fd, char *uri, char *hostname, char *hostport, char *path){
+int parse_uri(int fd, char *uri, char *hostname, char *hostport, char *path{
 
     if (uri[0] == '/'){
         strcpy(hostname, "");
@@ -209,6 +214,10 @@ void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longms
     Rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "<hr><em>Proxy server</em>\r\n");
     Rio_writen(fd, buf, strlen(buf));
+}
+
+void client500error(int fd) {
+    clienterror(fd, "Internal server error", "500", "Internal server error", "Internal server error");
 }
 
 void sigint_handler(int sig) {
